@@ -1,0 +1,47 @@
+# Secrets
+.env
+.env.*
+!.env.example
+
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+
+# Node.js
+node_modules/
+frontend/node_modules/
+frontend/dist/
+frontend/.vite/
+
+# Do not push frontend package manifests
+package.json
+package-lock.json
+frontend/package.json
+frontend/package-lock.json
+
+# IDE and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Python and test caches
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.cache/
+
+# Generated data and logs
+*.log
+data/*.jsonl
+data/*.csv
+data/*.parquet
+
+# Local databases and backups
+*.sqlite3
+*.db
+*.dump
+*.bak

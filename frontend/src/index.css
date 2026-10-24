@@ -1,0 +1,16 @@
+
+:root {
+  color-scheme: dark;
+  background: #0b0d12;
+}
+
+html, body, #root {
+  min-width: 320px;
+  width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+#root {
+  min-height: 100vh;
+}
