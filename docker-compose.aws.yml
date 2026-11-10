@@ -1,0 +1,48 @@
+
+services:
+  db:
+    image: pgvector/pgvector:pg16
+    container_name: devpilot-aws-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    volumes:
+      - devpilot_aws_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER} -d ${DB_NAME}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    image: 149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-backend:latest
+    container_name: devpilot-aws-backend
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      OLLAMA_BASE_URL: ${OLLAMA_BASE_URL}
+      HF_HOME: /root/.cache/huggingface
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+      - ./data:/app/data:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+  frontend:
+    image: 149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:latest
+    container_name: devpilot-aws-frontend
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    depends_on:
+      - backend
+
+volumes:
+  devpilot_aws_pgdata:
+  huggingface_cache:
