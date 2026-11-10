@@ -558,7 +558,7 @@ async function handleAnalyzeRepository() {
           </div>
 
           <div className="model-status">
-            <span className="status-dot" /> Local model
+            <span className="status-dot" />  model
           </div>
         </header>
 
