@@ -19,8 +19,6 @@ frontend/.vite/
 # Do not push frontend package manifests
 package.json
 package-lock.json
-frontend/package.json
-frontend/package-lock.json
 
 # IDE and OS files
 .vscode/
@@ -45,3 +43,7 @@ data/*.parquet
 *.db
 *.dump
 *.bak
+
+# Include frontend build manifests in Git
+!frontend/package.json
+!frontend/package-lock.json

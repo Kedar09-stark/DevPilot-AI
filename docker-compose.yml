@@ -1,3 +1,4 @@
+
 services:
   db:
     image: pgvector/pgvector:pg16
@@ -10,6 +11,55 @@ services:
       - "55432:5432"
     volumes:
       - devpilot_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U devpilot -d devpilot"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  ollama:
+    image: ollama/ollama:latest
+    container_name: devpilot-ollama
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      OLLAMA_HOST: 0.0.0.0:11434
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: devpilot-backend
+    env_file:
+      - .env
+    environment:
+      DB_HOST: db
+      DB_PORT: "5432"
+      OLLAMA_BASE_URL: http://ollama:11434
+      HF_HOME: /root/.cache/huggingface
+    ports:
+      - "127.0.0.1:8000:8000"
+    volumes:
+      - huggingface_cache:/root/.cache/huggingface
+    depends_on:
+      db:
+        condition: service_healthy
+      ollama:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: devpilot-frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
 
 volumes:
   devpilot_pgdata:
+    external: true
+    name: devpilot-ai_devpilot_pgdata
+  ollama_data:
+  huggingface_cache:

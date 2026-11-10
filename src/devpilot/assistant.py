@@ -1,7 +1,10 @@
+
+import os
 import hashlib
 import json
 import re
 import time
+
 
 from langchain_ollama import ChatOllama
 from devpilot.retriever import (
@@ -12,45 +15,107 @@ from devpilot.retriever import (
 )
 
 
-# num_ctx matters: Ollama's default context window is small, and a long
-# prompt gets silently truncated, which drops the instructions or the code.
+# --------------------------------------------------
+# Ollama Configuration
+# --------------------------------------------------
+
+# Read the model name and Ollama server URL from environment variables.
+# Local development uses localhost.
+# Docker deployment will use the Ollama service name: http://ollama:11434
+
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:3b")
+
+OLLAMA_BASE_URL = os.getenv(
+    "OLLAMA_BASE_URL",
+    "http://127.0.0.1:11434"
+)
+
+
+# --------------------------------------------------
+# Main LLM Configuration
+# --------------------------------------------------
+
+# Used to generate answers to users' repository-related questions.
+# Supports a larger context window for understanding retrieved code.
+
 llm = ChatOllama(
-    model="qwen2.5:3b",
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=900,
     num_ctx=8192,
 )
 
-# Small, fast model call used only to plan the search.
+
+# --------------------------------------------------
+# Planner LLM Configuration
+# --------------------------------------------------
+
+# Used to plan the search process before retrieving relevant code.
+# JSON output helps the application process the planning response.
+
 planner = ChatOllama(
-    model="qwen2.5:3b",
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=250,
     num_ctx=2048,
     format="json",
 )
 
-# Used to summarize one group of files at a time (map step).
+
+# --------------------------------------------------
+# Batch Summary LLM Configuration
+# --------------------------------------------------
+
+# Used to summarize groups of repository files during
+# the repository overview and analysis process.
+
 llm_batch = ChatOllama(
-    model="qwen2.5:3b",
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=450,
     num_ctx=4096,
 )
 
-# Used for the final, detailed whole-project answer (reduce step).
+
+# --------------------------------------------------
+# Final Response LLM Configuration
+# --------------------------------------------------
+
+# Used to generate detailed answers after processing
+# multiple groups of repository files.
+
 llm_long = ChatOllama(
-    model="qwen2.5:3b",
+    model=OLLAMA_MODEL,
+    base_url=OLLAMA_BASE_URL,
     temperature=0,
     num_predict=1600,
     num_ctx=8192,
 )
 
-# Whole-project questions read every indexed file in groups.
+
+# --------------------------------------------------
+# Repository Processing Configuration
+# --------------------------------------------------
+
+# Maximum number of batches processed for broad repository questions.
 MAX_BROAD_BATCHES = 6
+
+# Maximum characters retained from each batch summary.
 BATCH_DIGEST_CHARS = 5500
+
+# Folders containing more than this number of files
+# are treated as large folders.
 LARGE_FOLDER_FILES = 20
+
+# Stores generated batch summaries during processing.
 _BATCH_SUMMARIES: dict[str, str] = {}
+
+
+# Keep the prompt inside the context window (roughly 4 chars per token).
+
 
 # Keep the prompt inside the context window (roughly 4 chars per token).
 MAX_CHUNK_CHARS = 1500
@@ -156,7 +221,12 @@ Latest question:
     }
 
     try:
+        planner_start = time.perf_counter()
+
         raw = str(planner.invoke(prompt).content).strip()
+
+        planner_time = time.perf_counter() - planner_start
+        print(f"[DevPilot] Planner took {planner_time:.2f} seconds")
         data = json.loads(raw)
 
         plan["follow_up"] = data.get("follow_up") in (True, "true", "True")
@@ -1023,7 +1093,12 @@ Retrieved repository code:
     start_time = time.perf_counter()
 
     try:
+        llm_start = time.perf_counter()
+
         response = llm.invoke(prompt)
+
+        llm_time = time.perf_counter() - llm_start
+        print(f"[DevPilot] Final LLM took {llm_time:.2f} seconds")
         answer = str(response.content).strip()
 
         if not answer:
