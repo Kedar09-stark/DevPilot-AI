@@ -56,3 +56,59 @@ jobs:
           tags: |
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:latest
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:${{ github.sha }}
+
+      - name: Deploy to EC2 through SSM
+        if: github.event_name == 'push'
+        run: |
+          COMMAND_ID=$(aws ssm send-command \
+            --region ap-south-1 \
+            --instance-ids i-06a28757851cd8e78 \
+            --document-name AWS-RunShellScript \
+            --comment "Deploy DevPilot commit $GITHUB_SHA" \
+            --parameters 'commands=[
+              "set -e",
+              "cd /home/ubuntu/devpilot",
+              "aws ecr get-login-password --region ap-south-1 | sudo docker login --username AWS --password-stdin 149536463976.dkr.ecr.ap-south-1.amazonaws.com",
+              "sudo docker compose --env-file .env -f docker-compose.yml pull backend frontend",
+              "sudo docker compose --env-file .env -f docker-compose.yml up -d --remove-orphans",
+              "sudo docker compose --env-file .env -f docker-compose.yml ps"
+            ]' \
+            --query 'Command.CommandId' \
+            --output text)
+
+          echo "SSM Command ID: $COMMAND_ID"
+
+          for attempt in {1..60}; do
+            STATUS=$(aws ssm get-command-invocation \
+              --region ap-south-1 \
+              --command-id "$COMMAND_ID" \
+              --instance-id i-06a28757851cd8e78 \
+              --query 'Status' \
+              --output text 2>/dev/null || true)
+
+            echo "Deployment status: $STATUS"
+
+            if [ "$STATUS" = "Success" ]; then
+              aws ssm get-command-invocation \
+                --region ap-south-1 \
+                --command-id "$COMMAND_ID" \
+                --instance-id i-06a28757851cd8e78 \
+                --query 'StandardOutputContent' \
+                --output text
+              exit 0
+            fi
+
+            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
+              aws ssm get-command-invocation \
+                --region ap-south-1 \
+                --command-id "$COMMAND_ID" \
+                --instance-id i-06a28757851cd8e78 \
+                --output json
+              exit 1
+            fi
+
+            sleep 10
+          done
+
+          echo "Deployment is still running or has not completed within 5 minutes."
+          exit 1
