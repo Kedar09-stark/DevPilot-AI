@@ -1,3 +1,4 @@
+
 name: DevPilot AI CI/CD
 
 on:
@@ -8,12 +9,14 @@ on:
   pull_request:
     branches:
       - main
+
 permissions:
   contents: read
+  id-token: write
 
 jobs:
   build:
-    name: Build and Verify
+    name: Build and Push Docker Images
     runs-on: ubuntu-latest
 
     steps:
@@ -23,18 +26,33 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
+      - name: Configure AWS Credentials
+        if: github.event_name == 'push'
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        if: github.event_name == 'push'
+        uses: aws-actions/amazon-ecr-login@v2
+
       - name: Build Backend Docker Image
         uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          push: false
-          tags: devpilot-backend:ci
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-backend:latest
+            149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-backend:${{ github.sha }}
 
       - name: Build Frontend Docker Image
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
           file: ./frontend/Dockerfile
-          push: false
-          tags: devpilot-frontend:ci
+          push: ${{ github.event_name == 'push' }}
+          tags: |
+            149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:latest
+            149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:${{ github.sha }}
