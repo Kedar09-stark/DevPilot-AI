@@ -1,4 +1,4 @@
-
+﻿
 name: DevPilot AI CI/CD
 
 on:
@@ -13,6 +13,7 @@ on:
 permissions:
   contents: read
   id-token: write
+  pull-requests: read
 
 jobs:
   build:
@@ -23,21 +24,38 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v4
 
+      - name: Detect Changed Services
+        uses: dorny/paths-filter@v3
+        id: changes
+        with:
+          filters: |
+            backend:
+              - 'Dockerfile'
+              - 'requirements.txt'
+              - '.dockerignore'
+              - 'src/**'
+            frontend:
+              - 'frontend/**'
+            deployment:
+              - 'deploy-aws.sh'
+              - '.github/workflows/ci-cd.yml'
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Configure AWS Credentials
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && (steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true' || steps.changes.outputs.deployment == 'true')
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ vars.AWS_REGION }}
 
       - name: Login to Amazon ECR
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && (steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true')
         uses: aws-actions/amazon-ecr-login@v2
 
       - name: Build Backend Docker Image
+        if: steps.changes.outputs.backend == 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -46,8 +64,11 @@ jobs:
           tags: |
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-backend:latest
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-backend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
       - name: Build Frontend Docker Image
+        if: steps.changes.outputs.frontend == 'true'
         uses: docker/build-push-action@v6
         with:
           context: ./frontend
@@ -56,59 +77,86 @@ jobs:
           tags: |
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:latest
             149536463976.dkr.ecr.ap-south-1.amazonaws.com/devpilot-frontend:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+
+      - name: Validate Deployment Script
+        run: bash -n deploy-aws.sh
 
       - name: Deploy to EC2 through SSM
-        if: github.event_name == 'push'
+        if: github.event_name == 'push' && (steps.changes.outputs.backend == 'true' || steps.changes.outputs.frontend == 'true' || steps.changes.outputs.deployment == 'true')
+        env:
+          BACKEND_CHANGED: ${{ steps.changes.outputs.backend }}
+          FRONTEND_CHANGED: ${{ steps.changes.outputs.frontend }}
         run: |
+          SCRIPT_B64=$(base64 -w 0 deploy-aws.sh)
+
+          REMOTE_COMMAND="set -e; echo '$SCRIPT_B64' | base64 -d | sudo tee /home/ubuntu/devpilot/deploy-aws.sh >/dev/null; sudo chmod +x /home/ubuntu/devpilot/deploy-aws.sh; sudo rm -f /home/ubuntu/devpilot/deploy-status; sudo -u ubuntu nohup bash /home/ubuntu/devpilot/deploy-aws.sh '$BACKEND_CHANGED' '$FRONTEND_CHANGED' >/home/ubuntu/devpilot/deploy.log 2>&1 </dev/null &"
+
+          PARAMETERS=$(jq -n --arg command "$REMOTE_COMMAND" '{commands: [$command]}')
+
           COMMAND_ID=$(aws ssm send-command \
             --region ap-south-1 \
             --instance-ids i-06a28757851cd8e78 \
             --document-name AWS-RunShellScript \
-            --comment "Deploy DevPilot commit $GITHUB_SHA" \
-            --parameters 'commands=[
-              "set -e",
-              "cd /home/ubuntu/devpilot",
-              "aws ecr get-login-password --region ap-south-1 | sudo docker login --username AWS --password-stdin 149536463976.dkr.ecr.ap-south-1.amazonaws.com",
-              "sudo docker compose --env-file .env -f docker-compose.yml pull backend frontend",
-              "sudo docker compose --env-file .env -f docker-compose.yml up -d --remove-orphans",
-              "sudo docker compose --env-file .env -f docker-compose.yml ps"
-            ]' \
+            --comment "Start DevPilot deployment $GITHUB_SHA" \
+            --parameters "$PARAMETERS" \
             --query 'Command.CommandId' \
             --output text)
 
-          echo "SSM Command ID: $COMMAND_ID"
+          echo "Deployment started: $COMMAND_ID"
+
+          sleep 5
 
           for attempt in {1..60}; do
-            STATUS=$(aws ssm get-command-invocation \
+            CHECK_ID=$(aws ssm send-command \
               --region ap-south-1 \
-              --command-id "$COMMAND_ID" \
+              --instance-ids i-06a28757851cd8e78 \
+              --document-name AWS-RunShellScript \
+              --parameters 'commands=["cat /home/ubuntu/devpilot/deploy-status 2>/dev/null || echo missing"]' \
+              --query 'Command.CommandId' \
+              --output text)
+
+            sleep 3
+
+            CHECK_STATUS=$(aws ssm get-command-invocation \
+              --region ap-south-1 \
+              --command-id "$CHECK_ID" \
               --instance-id i-06a28757851cd8e78 \
               --query 'Status' \
               --output text 2>/dev/null || true)
 
-            echo "Deployment status: $STATUS"
-
-            if [ "$STATUS" = "Success" ]; then
-              aws ssm get-command-invocation \
+            if [ "$CHECK_STATUS" = "Success" ]; then
+              DEPLOY_STATUS=$(aws ssm get-command-invocation \
                 --region ap-south-1 \
-                --command-id "$COMMAND_ID" \
+                --command-id "$CHECK_ID" \
                 --instance-id i-06a28757851cd8e78 \
                 --query 'StandardOutputContent' \
-                --output text
-              exit 0
-            fi
+                --output text | tr -d '[:space:]')
 
-            if [ "$STATUS" = "Failed" ] || [ "$STATUS" = "Cancelled" ] || [ "$STATUS" = "TimedOut" ]; then
-              aws ssm get-command-invocation \
-                --region ap-south-1 \
-                --command-id "$COMMAND_ID" \
-                --instance-id i-06a28757851cd8e78 \
-                --output json
-              exit 1
+              echo "Deployment status: $DEPLOY_STATUS"
+
+              if [ "$DEPLOY_STATUS" = "success" ]; then
+                echo "DevPilot deployment completed."
+                exit 0
+              fi
+
+              if [ "$DEPLOY_STATUS" = "failed" ]; then
+                echo "Deployment failed. Fetching logs..."
+
+                aws ssm send-command \
+                  --region ap-south-1 \
+                  --instance-ids i-06a28757851cd8e78 \
+                  --document-name AWS-RunShellScript \
+                  --parameters 'commands=["cat /home/ubuntu/devpilot/deploy.log"]'
+
+                exit 1
+              fi
             fi
 
             sleep 10
           done
 
-          echo "Deployment is still running or has not completed within 5 minutes."
+          echo "Deployment did not finish within the expected time."
           exit 1
